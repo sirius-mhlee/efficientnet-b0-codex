@@ -18,8 +18,9 @@ torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
 
 def worker_init_fn(worker_id):
-    random.seed(Config.seed)
-    np.random.seed(Config.seed)
+    worker_seed = torch.initial_seed() % (2**32)
+    random.seed(worker_seed)
+    np.random.seed(worker_seed)
 
 generator = torch.Generator()
 generator.manual_seed(Config.seed)

@@ -13,9 +13,8 @@ class EfficientNet_B0(nn.Module):
         for param in self.backbone.parameters():
             param.requires_grad = False
 
-        self.classifier = CustomLinearLayer(1000, class_num)
+        in_features = self.backbone.classifier[1].in_features
+        self.backbone.classifier[1] = CustomLinearLayer(in_features, class_num)
 
     def forward(self, x):
-        x = self.backbone(x)
-        x = self.classifier(x)
-        return x
+        return self.backbone(x)

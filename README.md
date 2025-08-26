@@ -7,12 +7,10 @@ https://dacon.io/competitions/official/236006/overview/description
 
 - PyTorch Docker Container
 - pandas
-- tqdm
 - scikit-learn
-- Albumentations
 
 ```shell
-pip install pandas tqdm scikit-learn albumentations
+pip install pandas scikit-learn
 ```
 
 ## Train

@@ -9,13 +9,11 @@ from tqdm.auto import tqdm
 from sklearn import preprocessing
 from sklearn.model_selection import StratifiedKFold, train_test_split
 
-import albumentations as A
-from albumentations.pytorch.transforms import ToTensorV2
-
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
+from torchvision.transforms import v2
 
 import Config
 
@@ -39,7 +37,7 @@ def main():
     df['artist'] = le.fit_transform(df['artist'].values)
     pickle.dump(le, open('./Output/encoder.pkl', 'wb'))
 
-    df.sort_values(by=['id'])
+    df.sort_values(by=['id'], inplace=True)
     train_x = df['img_path'].values
     train_y = df['artist'].values
 
@@ -58,23 +56,23 @@ def main():
         else:
             split_train_idx, split_val_idx = train_test_split(np.arange(len(train_x)), test_size=0.2, shuffle=True)
 
-    train_transform = A.Compose([
-                                A.Resize(Config.img_size, Config.img_size),
-                                A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225), max_pixel_value=255.0, always_apply=False, p=1.0),
-                                ToTensorV2()
+    train_transform = v2.Compose([
+                                v2.Resize((Config.img_size, Config.img_size), interpolation=v2.InterpolationMode.BICUBIC, antialias=True),
+                                v2.ToImage(),
+                                v2.ToDtype(torch.float32, scale=True),
+                                v2.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
                                 ])
 
-    val_transform = A.Compose([
-                                A.Resize(Config.img_size, Config.img_size),
-                                A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225), max_pixel_value=255.0, always_apply=False, p=1.0),
-                                ToTensorV2()
+    val_transform = v2.Compose([
+                                v2.Resize((Config.img_size, Config.img_size), interpolation=v2.InterpolationMode.BICUBIC, antialias=True),
+                                v2.ToImage(),
+                                v2.ToDtype(torch.float32, scale=True),
+                                v2.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
                                 ])
 
-    for idx, train_model_name in enumerate(Config.train_model_name_list):
-        idx += 1
-
+    for idx, train_model_name in enumerate(Config.train_model_name_list, start=1):
         print()
-        print('Model: {}, Name: {}'.format(idx, train_model_name))
+        print(f'Model: {idx}, Name: {train_model_name}')
         if Config.print_model:
             print()
             print(get_model_by_name(train_model_name))
@@ -89,10 +87,8 @@ def main():
         else:
             data_generator = [(split_train_idx, split_val_idx)]
 
-        for fold, (train_idx, val_idx) in enumerate(data_generator):
-            fold += 1
-
-            print('Fold: {}'.format(fold))
+        for fold, (train_idx, val_idx) in enumerate(data_generator, start=1):
+            print(f'Fold: {fold}')
 
             # Define Dataset, Dataloader
             fold_train_x = train_x[train_idx]
@@ -106,10 +102,10 @@ def main():
 
             if Config.fixed_randomness:
                 train_loader = DataLoader(train_dataset, batch_size=Config.batch_size, shuffle=True, num_workers=Config.data_loader_worker_num, pin_memory=True, drop_last=False, worker_init_fn=Randomness.worker_init_fn, generator=Randomness.generator)
-                val_loader = DataLoader(val_dataset, batch_size=Config.batch_size, shuffle=True, num_workers=Config.data_loader_worker_num, pin_memory=True, drop_last=False, worker_init_fn=Randomness.worker_init_fn, generator=Randomness.generator)
+                val_loader = DataLoader(val_dataset, batch_size=Config.batch_size, shuffle=False, num_workers=Config.data_loader_worker_num, pin_memory=True, drop_last=False, worker_init_fn=Randomness.worker_init_fn, generator=Randomness.generator)
             else:
                 train_loader = DataLoader(train_dataset, batch_size=Config.batch_size, shuffle=True, num_workers=Config.data_loader_worker_num, pin_memory=True, drop_last=False)
-                val_loader = DataLoader(val_dataset, batch_size=Config.batch_size, shuffle=True, num_workers=Config.data_loader_worker_num, pin_memory=True, drop_last=False)
+                val_loader = DataLoader(val_dataset, batch_size=Config.batch_size, shuffle=False, num_workers=Config.data_loader_worker_num, pin_memory=True, drop_last=False)
 
             # Define Model, Criterion, Optimizer, Scheduler
             model = get_model_by_name(train_model_name)
@@ -127,84 +123,95 @@ def main():
             best_epoch = 0
             best_loss = np.inf
             best_score = 0.0
-            best_model = copy.deepcopy(model.module.state_dict())
+            best_model = copy.deepcopy(getattr(model, 'module', model).state_dict())
 
-            val_pred_list = []
-            val_target_list = []
+            rng = np.random.default_rng()
 
             print()
-            for epoch in range(Config.epoch):
-                epoch += 1
-
+            for epoch in range(1, Config.epoch + 1):
                 model.train()
-                train_loss = 0.0    
-                for input, target in tqdm(iter(train_loader)):
-                    input = input.to(device)
-                    target = target.to(device).long()
+                train_loss_sum = 0.0
+                train_seen = 0
 
-                    optimizer.zero_grad()
-                    
+                for inputs, targets in tqdm(train_loader):
+                    inputs = inputs.to(device, non_blocking=True)
+                    targets = targets.to(device, non_blocking=True).long()
+
+                    optimizer.zero_grad(set_to_none=True)
+
                     if Config.use_mixup:
                         if Config.fixed_randomness:
                             lambda_value = Randomness.rng.beta(1.0, 1.0)
                         else:
-                            lambda_value = np.random.default_rng().beta(1.0, 1.0)
+                            lambda_value = rng.beta(1.0, 1.0)
 
-                        mixed_index = torch.randperm(input.size(0)).to(device)
+                        mixed_index = torch.randperm(inputs.size(0)).to(device)
 
-                        mixed_input = lambda_value * input + (1 - lambda_value) * input[mixed_index]
-                        target_a, target_b = target, target[mixed_index]
+                        mixed_inputs = lambda_value * inputs + (1 - lambda_value) * inputs[mixed_index]
+                        target_a, target_b = targets, targets[mixed_index]
 
-                        output = model(mixed_input)
-                        loss = lambda_value * criterion(output, target_a) + (1 - lambda_value) * criterion(output, target_b)
+                        outputs = model(mixed_inputs)
+                        loss = lambda_value * criterion(outputs, target_a) + (1 - lambda_value) * criterion(outputs, target_b)
                     else:
-                        output = model(input)
-                        loss = criterion(output, target)
+                        outputs = model(inputs)
+                        loss = criterion(outputs, targets)
 
                     loss.backward()
                     optimizer.step()
 
-                    train_loss += loss.item() * input.size(0)
+                    batch_size = inputs.size(0)
+                    train_loss_sum += loss.detach().item() * batch_size
+                    train_seen += batch_size
 
                 model.eval()
-                val_loss = 0.0
-                with torch.no_grad():
-                    for input, target in tqdm(iter(val_loader)):
-                        input = input.to(device)
-                        target = target.to(device).long()
-                        
-                        output = model(input)
-                        _, pred = torch.max(output, 1)
-                        
-                        loss = criterion(output, target)
-                        
-                        val_loss += loss.item() * input.size(0)
+                val_loss_sum = 0.0
+                val_seen = 0
 
-                        val_pred_list.extend(pred.detach().cpu().numpy().tolist())
-                        val_target_list.extend(target.detach().cpu().numpy().tolist())
-                
-                epoch_train_loss = train_loss / len(train_loader)
-                epoch_val_loss = val_loss / len(val_loader)
+                val_pred_list = []
+                val_target_list = []
+
+                with torch.no_grad():
+                    for inputs, targets in tqdm(val_loader):
+                        inputs = inputs.to(device, non_blocking=True)
+                        targets = targets.to(device, non_blocking=True).long()
+
+                        outputs = model(inputs)
+                        loss = criterion(outputs, targets)
+
+                        batch_size = inputs.size(0)
+                        val_loss_sum += loss.detach().item() * batch_size
+                        val_seen += batch_size
+
+                        _, preds = torch.max(outputs, 1)
+
+                        val_pred_list.extend(preds.detach().cpu().tolist())
+                        val_target_list.extend(targets.detach().cpu().tolist())
+
+                epoch_train_loss = train_loss_sum / max(1, train_seen)
+                epoch_val_loss = val_loss_sum / max(1, val_seen)
 
                 train_loss_list.append(epoch_train_loss)
                 val_loss_list.append(epoch_val_loss)
 
                 val_score = macro_f1_score(val_target_list, val_pred_list)
-                
+
                 if scheduler is not None:
-                    epoch_lr = scheduler.get_last_lr()[0]
-                    scheduler.step()
+                    if hasattr(scheduler, 'step') and 'ReduceLROnPlateau' in type(scheduler).__name__:
+                        scheduler.step(epoch_val_loss)
+                    else:
+                        scheduler.step()
+                    epoch_lr = optimizer.param_groups[0]['lr']
                 else:
                     epoch_lr = Config.learning_rate
 
-                print('Epoch: {}, Learning Rate: {:.6}, Train Loss: {:.4}, Val Loss: {:.4}, Val Score: {:.4}'.format(epoch, epoch_lr, epoch_train_loss, epoch_val_loss, val_score))
+                print(f'Epoch: {epoch}, Learning Rate: {epoch_lr:.6f}, Train Loss: {epoch_train_loss:.4f}, Val Loss: {epoch_val_loss:.4f}, Val Score: {val_score:.4f}')
                 print()
 
                 if epoch_val_loss < best_loss:
                     best_epoch = epoch
                     best_loss = epoch_val_loss
                     best_score = val_score
-                    best_model = copy.deepcopy(model.module.state_dict())
+                    best_model = copy.deepcopy(getattr(model, 'module', model).state_dict())
 
             fold_best_epoch.append(best_epoch)
             fold_best_loss.append(best_loss)
@@ -215,11 +222,11 @@ def main():
                         'score': best_score,
                         'name': train_model_name,
                         'model_state_dict': best_model},
-                        './Output/{}_fold_{}_result.pt'.format(train_model_name, fold))
+                        f'./Output/{train_model_name}_fold_{fold}_result.pt')
 
-        print('Fold Best Epoch: {}'.format(fold_best_epoch))
-        print('Fold Best Loss: {}'.format(fold_best_loss))
-        print('Fold Best Score: {}'.format(fold_best_score))
+        print(f'Fold Best Epoch: {fold_best_epoch}')
+        print(f'Fold Best Loss: {fold_best_loss}')
+        print(f'Fold Best Score: {fold_best_score}')
 
     print()
 
