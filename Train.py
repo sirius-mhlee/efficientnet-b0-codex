@@ -145,7 +145,7 @@ def main():
                         else:
                             lambda_value = rng.beta(1.0, 1.0)
 
-                        mixed_index = torch.randperm(inputs.size(0)).to(device)
+                        mixed_index = torch.randperm(inputs.size(0)).to(device, non_blocking=True)
 
                         mixed_inputs = lambda_value * inputs + (1 - lambda_value) * inputs[mixed_index]
                         target_a, target_b = targets, targets[mixed_index]

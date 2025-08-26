@@ -78,7 +78,7 @@ def main():
         for inputs in tqdm(test_loader):
             inputs = inputs.to(device, non_blocking=True)
 
-            logits_sum = torch.zeros((inputs.size(0), Config.class_num)).to(device)
+            logits_sum = torch.zeros((inputs.size(0), Config.class_num)).to(device, non_blocking=True)
             for model in model_list:
                 outputs = model(inputs)
                 logits_sum = torch.add(logits_sum, outputs)
